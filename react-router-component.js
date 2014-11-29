@@ -64,6 +64,8 @@ var NavigatableMixin          = __browserify__('./lib/NavigatableMixin');
 
 var environment               = __browserify__('./lib/environment');
 
+var CaptureClicks             = __browserify__('./lib/CaptureClicks');
+
 module.exports = {
   Locations: Router.Locations,
   Pages: Router.Pages,
@@ -80,17 +82,19 @@ module.exports = {
   RouteRenderingMixin: RouteRenderingMixin,
   AsyncRouteRenderingMixin: AsyncRouteRenderingMixin,
 
-  NavigatableMixin: NavigatableMixin
+  NavigatableMixin: NavigatableMixin,
+  CaptureClicks: CaptureClicks
 };
 
-},{"./lib/AsyncRouteRenderingMixin":3,"./lib/Link":4,"./lib/NavigatableMixin":5,"./lib/Route":6,"./lib/RouteRenderingMixin":7,"./lib/Router":8,"./lib/RouterMixin":9,"./lib/environment":14}],"__main__":[function(__browserify__,module,exports){
+},{"./lib/AsyncRouteRenderingMixin":3,"./lib/CaptureClicks":4,"./lib/Link":5,"./lib/NavigatableMixin":6,"./lib/Route":7,"./lib/RouteRenderingMixin":8,"./lib/Router":9,"./lib/RouterMixin":10,"./lib/environment":15}],"__main__":[function(__browserify__,module,exports){
 module.exports=__browserify__('Focm2+');
 },{}],3:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var merge               = (window.__ReactShim.merge);
-var prefetchAsyncState  = (window.__ReactAsyncShim.prefetchAsyncState);
-var isAsyncComponent    = (window.__ReactAsyncShim.isAsyncComponent);
+var assign              = Object.assign || __browserify__('object.assign');
+var prefetchAsyncState  = (typeof window !== "undefined" ? window.__ReactAsyncShim.prefetchAsyncState : typeof global !== "undefined" ? global.__ReactAsyncShim.prefetchAsyncState : null);
+var isAsyncComponent    = (typeof window !== "undefined" ? window.__ReactAsyncShim.isAsyncComponent : typeof global !== "undefined" ? global.__ReactAsyncShim.isAsyncComponent : null);
 var RouteRenderingMixin = __browserify__('./RouteRenderingMixin');
 
 /**
@@ -104,7 +108,7 @@ var AsyncRouteRenderingMixin = {
     var currentHandler = this.state && this.state.handler;
     var nextHandler = state && state.handler;
 
-    if (nextHandler &&
+    if (nextHandler && nextHandler.type && 
         isAsyncComponent(nextHandler) &&
         // if component's type is the same we would need to skip async state
         // update
@@ -130,8 +134,7 @@ var AsyncRouteRenderingMixin = {
       if (this.isMounted() &&
           this.state.pendingState &&
           this.state.pendingState.match === state.match) {
-
-        var nextState = merge(this.state.pendingState, {handler: handler});
+        var nextState = assign({}, this.state.pendingState, {handler: handler});
         this.replaceState(nextState, cb);
 
       }
@@ -141,12 +144,140 @@ var AsyncRouteRenderingMixin = {
 
 module.exports = AsyncRouteRenderingMixin;
 
-},{"./RouteRenderingMixin":7}],4:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./RouteRenderingMixin":8,"object.assign":17}],4:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var React             = (window.__ReactShim.React);
+var React       = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
+var urllite     = __browserify__('urllite/lib/core');
+var Environment = __browserify__('./environment');
+var assign      = Object.assign || __browserify__('object.assign');
+
+/**
+ * A container component which captures <a> clicks and, if there's a matching
+ * route defined, routes them.
+ */
+var CaptureClicks = React.createClass({
+  displayName: 'CaptureClicks',
+
+  propTypes: {
+    component: React.PropTypes.func.isRequired,
+    environment: React.PropTypes.object
+  },
+
+  getDefaultProps: function() {
+    return {
+      component: React.DOM.div,
+      environment: Environment.defaultEnvironment,
+      gotoURL: function(url) {
+        // We should really just be allowing the event's default action, be we
+        // can't make the decision to do that synchronously.
+        window.location.href = url;
+      }
+    };
+  },
+
+  onClick: function(e) {
+    if (this.props.onClick) {
+      this.props.onClick(e);
+    }
+
+    // Ignore canceled events, modified clicks, and right clicks.
+    if (e.defaultPrevented) {
+      return;
+    }
+
+    if (e.metaKey || e.ctrlKey || e.shiftKey) {
+      return;
+    }
+
+    if (e.button !== 0) {
+      return;
+    }
+
+    // Get the <a> element.
+    var el = e.target;
+    while (el && el.nodeName !== 'A') {
+      el = el.parentNode;
+    }
+
+    // Ignore clicks from non-a elements.
+    if (!el) {
+      return;
+    }
+
+    // Ignore the click if the element has a target.
+    if (el.target && el.target !== '_self') {
+      return;
+    }
+
+    // Ignore the click if it's a download link. (We use this method of
+    // detecting the presence of the attribute for old IE versions.)
+    if (!!el.attributes.download) {
+      return;
+    }
+
+    // Use a regular expression to parse URLs instead of relying on the browser
+    // to do it for us (because IE).
+    var url = urllite(el.href);
+    var windowURL = urllite(window.location.href);
+
+    // Ignore links that don't share a protocol and host with ours.
+    if (url.protocol !== windowURL.protocol || url.host !== windowURL.host) {
+      return;
+    }
+
+    // Ignore 'rel="external"' links.
+    if (el.rel && /(?:^|\s+)external(?:\s+|$)/.test(el.rel)) {
+      return;
+    }
+
+    e.preventDefault();
+
+    // flag if we already found a "not found" case and bailed
+    var bail = false;
+
+    var onBeforeNavigation = function(path, navigation) {
+      if (bail) {
+        return false;
+      } else if (!navigation.match || !navigation.match.match) {
+        bail = true;
+        this.props.gotoURL(el.href);
+        return false;
+      }
+    }.bind(this);
+
+    this.props.environment.navigate(
+      url.pathname + (url.hash.length > 1 ? url.hash : ''),
+      {onBeforeNavigation: onBeforeNavigation},
+      function(err, info) {
+        if (err) {
+          throw err;
+        }
+      });
+  },
+
+  render: function() {
+    var props = assign({}, this.props, {
+      onClick: this.onClick
+    });
+    return this.props.component(props, this.props.children);
+  }
+
+});
+
+module.exports = CaptureClicks;
+
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./environment":15,"object.assign":17,"urllite/lib/core":21}],5:[function(__browserify__,module,exports){
+(function (global){
+"use strict";
+
+var React             = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
 var NavigatableMixin  = __browserify__('./NavigatableMixin');
 var Environment       = __browserify__('./environment');
+var assign            = Object.assign || __browserify__('object.assign');
 
 /**
  * Link.
@@ -170,6 +301,11 @@ var Link = React.createClass({
     if (this.props.onClick) {
       this.props.onClick(e);
     }
+    
+    // return if the user did a middle-click, right-click, or used a modifier
+    // key (like ctrl-click, meta-click, shift-click, etc.)
+    if (e.button !== 0 || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+
     if (!e.defaultPrevented) {
       e.preventDefault();
       this._navigate(this.props.href, function(err) {
@@ -209,20 +345,22 @@ var Link = React.createClass({
   },
 
   render: function() {
-    var props = {
+    var props = assign({}, this.props, {
       onClick: this.onClick,
       href: this._createHref()
-    };
-    return this.transferPropsTo(React.DOM.a(props, this.props.children));
+    });
+    return React.DOM.a(props, this.props.children);
   }
 });
 
 module.exports = Link;
 
-},{"./NavigatableMixin":5,"./environment":14}],5:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./NavigatableMixin":6,"./environment":15,"object.assign":17}],6:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var React       = (window.__ReactShim.React);
+var React       = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
 var Environment = __browserify__('./environment');
 
 
@@ -235,7 +373,7 @@ var Environment = __browserify__('./environment');
 var NavigatableMixin = {
 
   contextTypes: {
-    router: React.PropTypes.component,
+    router: React.PropTypes.any
   },
 
   /**
@@ -260,81 +398,59 @@ var NavigatableMixin = {
 
 module.exports = NavigatableMixin;
 
-},{"./environment":14}],6:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./environment":15}],7:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var invariant = (window.__ReactShim.invariant);
-var merge     = (window.__ReactShim.merge);
-var mergeInto = (window.__ReactShim.mergeInto);
+var React     = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
 
-/**
- * Create a new route descriptor from a specification.
- *
- * @param {Object} spec
- * @param {?Object} defaults
- */
-function createRoute(spec, defaults) {
-
-  var handler = spec.handler;
-  var path = spec.path;
-  var ref = spec.ref;
-  var props = merge({}, spec);
-
-  delete props.path;
-  delete props.handler;
-  delete props.ref;
-
-  var route = {
-    path: path,
-    handler: handler,
-    props: props,
-    ref: ref
-  };
-
-  if (defaults) {
-    mergeInto(route, defaults);
-  }
-
-  invariant(
-    typeof route.handler === 'function',
-    "Route handler should be a component or a function but got: %s", handler
-  );
-
-  invariant(
-    route.path !== undefined,
-    "Route should have an URL pattern specified: %s", handler
-  );
-
-  return route;
-}
-
-/**
- * Regular route descriptor.
- *
- * @param {Object} spec
- */
-function Route(spec) {
-  return createRoute(spec);
-}
-
-/**
- * Catch all route descriptor.
- *
- * @param {Object} spec
- */
-function NotFound(spec) {
-  return createRoute(spec, {path: null});
+function createClass(name) {
+  return React.createClass({
+    propTypes: {
+      handler: React.PropTypes.oneOfType([
+        React.PropTypes.node,
+        React.PropTypes.func
+      ]).isRequired,
+      path: name === 'NotFound' ? 
+        function(props, propName) {
+          if (props[propName]) throw new Error("Don't pass a `path` to NotFound.");
+        }
+        : React.PropTypes.string.isRequired
+    },
+    getDefaultProps: function() {
+      if (name === 'NotFound') {
+        return {path: null};
+      }
+      return {};
+    },
+    render: function() {
+      throw new Error(name + " is not meant to be directly rendered.");
+    }
+  });
 }
 
 module.exports = {
-  Route: Route,
-  NotFound: NotFound
+  /**
+   * Regular route descriptor.
+   *
+   * @param {Object} spec
+   */
+  Route: createClass('Route'),
+  /**
+   * Catch all route descriptor.
+   *
+   * @param {Object} spec
+   */
+  NotFound: createClass('NotFound')
 };
 
-},{}],7:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],8:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var cloneWithProps  = (window.__ReactShim.cloneWithProps);
+var cloneWithProps = (typeof window !== "undefined" ? window.__ReactShim.cloneWithProps : typeof global !== "undefined" ? global.__ReactShim.cloneWithProps : null);
 
 /**
  * Mixin for routers which implements the simplest rendering strategy.
@@ -342,20 +458,24 @@ var cloneWithProps  = (window.__ReactShim.cloneWithProps);
 var RouteRenderingMixin = {
 
   renderRouteHandler: function() {
-    var ref = this.state.match.route && this.state.match.route.ref;
-    return cloneWithProps(this.state.handler, {ref: ref});
+    var handler = this.state.handler;
+    return cloneWithProps(handler, {ref: this.state.match.route.ref});
   }
 
 };
 
 module.exports = RouteRenderingMixin;
 
-},{}],8:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],9:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var React                     = (window.__ReactShim.React);
+var React                     = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
 var RouterMixin               = __browserify__('./RouterMixin');
 var AsyncRouteRenderingMixin  = __browserify__('./AsyncRouteRenderingMixin');
+// var assign                    = Object.assign || __browserify__('object.assign');
+var assign                    = __browserify__('object.assign');
 
 /**
  * Create a new router class
@@ -382,8 +502,12 @@ function createRouter(name, component) {
     },
 
     render: function() {
+      // Render the Route's handler.
       var handler = this.renderRouteHandler();
-      return this.transferPropsTo(this.props.component(null, handler));
+      // Pass all props except this component to the Router (containing div/body).
+      var props = assign({}, this.props);
+      delete props.component;
+      return this.props.component(props, handler);
     }
   });
 }
@@ -391,15 +515,17 @@ function createRouter(name, component) {
 module.exports = {
   createRouter: createRouter,
   Locations: createRouter('Locations', React.DOM.div),
-  Pages: createRouter('Pages', React.DOM.body),
+  Pages: createRouter('Pages', React.DOM.body)
 }
 
-},{"./AsyncRouteRenderingMixin":3,"./RouterMixin":9}],9:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./AsyncRouteRenderingMixin":3,"./RouterMixin":10,"object.assign":17}],10:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var React         = (window.__ReactShim.React);
-var invariant     = (window.__ReactShim.invariant);
-var merge         = (window.__ReactShim.merge);
+var React         = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
+var invariant     = (typeof window !== "undefined" ? window.__ReactShim.invariant : typeof global !== "undefined" ? global.__ReactShim.invariant : null);
+var assign        = Object.assign || __browserify__('object.assign');
 var matchRoutes   = __browserify__('./matchRoutes');
 var Environment   = __browserify__('./environment');
 
@@ -414,7 +540,7 @@ var RouterMixin = {
   },
 
   childContextTypes: {
-    router: React.PropTypes.component
+    router: React.PropTypes.any
   },
 
   getChildContext: function() {
@@ -424,7 +550,7 @@ var RouterMixin = {
   },
 
   contextTypes: {
-    router: React.PropTypes.component
+    router: React.PropTypes.any
   },
 
   getInitialState: function() {
@@ -447,12 +573,14 @@ var RouterMixin = {
       var parentMatch = parent.getMatch();
 
       invariant(
-        props.path || isString(parentMatch.unmatchedPath),
+        props.path ||
+        isString(parentMatch.unmatchedPath) ||
+        parentMatch.matchedPath == parentMatch.path,
         "contextual router has nothing to match on: %s", parentMatch.unmatchedPath
       );
 
-      path = props.path || parentMatch.unmatchedPath;
-      prefix = parentMatch.matchedPath;
+      path = props.path || parentMatch.unmatchedPath || '/';
+      prefix = parent.state.prefix + parentMatch.matchedPath;
     } else {
 
       path = props.path || this.getEnvironment().getPath();
@@ -530,11 +658,6 @@ var RouterMixin = {
    * @param {Callback} cb
    */
   navigate: function(path, navigation, cb) {
-    if (typeof navigation === 'function' && cb === undefined) {
-      cb = navigation;
-      navigation = {};
-    }
-    navigation = navigation || {};
     path = join(this.state.prefix, path);
     this.getEnvironment().setPath(path, navigation, cb);
   },
@@ -561,7 +684,7 @@ var RouterMixin = {
       navigation: navigation
     };
 
-    navigation = merge(navigation, {match: match});
+    assign(navigation, {match: match});
 
     if (this.props.onBeforeNavigation &&
         this.props.onBeforeNavigation(path, navigation) === false) {
@@ -612,11 +735,13 @@ function isString(o) {
 
 module.exports = RouterMixin;
 
-},{"./environment":14,"./matchRoutes":15}],10:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./environment":15,"./matchRoutes":16,"object.assign":17}],11:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
 var Environment   = __browserify__('./Environment');
-var emptyFunction = (window.__ReactShim.emptyFunction);
+var emptyFunction = (typeof window !== "undefined" ? window.__ReactShim.emptyFunction : typeof global !== "undefined" ? global.__ReactShim.emptyFunction : null);
 
 /**
  * Dummy routing environment which provides no path.
@@ -632,7 +757,12 @@ DummyEnvironment.prototype.constructor = DummyEnvironment;
 
 DummyEnvironment.prototype.getPath = emptyFunction.thatReturnsNull;
 
-DummyEnvironment.prototype.setPath = function(path, cb) {
+DummyEnvironment.prototype.setPath = function(path, navigation, cb) {
+  // Support old (path, cb) arity
+  if (typeof navigation === 'function' && cb === undefined) {
+    cb = navigation;
+    navigation = {};
+  }
   this.path = path;
   cb();
 };
@@ -643,10 +773,12 @@ DummyEnvironment.prototype.stop = emptyFunction;
 
 module.exports = DummyEnvironment;
 
-},{"./Environment":11}],11:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./Environment":12}],12:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
-var ReactUpdates  = (window.__ReactShim.ReactUpdates);
+var ReactUpdates  = (typeof window !== "undefined" ? window.__ReactShim.ReactUpdates : typeof global !== "undefined" ? global.__ReactShim.ReactUpdates : null);
 
 /**
  * Base abstract class for a routing environment.
@@ -690,14 +822,18 @@ Environment.prototype.makeHref = function makeHref(path) {
 }
 
 Environment.prototype.navigate = function navigate(path, navigation, cb) {
-  if (typeof navigation === 'function' && cb === undefined) {
-    cb = navigation;
-    navigation = {};
-  }
   return this.setPath(path, navigation, cb);
 }
 
 Environment.prototype.setPath = function(path, navigation, cb) {
+  // Support (path, cb) arity.
+  if (typeof navigation === 'function' && cb === undefined) {
+    cb = navigation;
+    navigation = {};
+  }
+  // Support (path) arity.
+  if (!navigation) navigation = {};
+
   if (!navigation.isPopState) {
     if (navigation.replace) {
       this.replaceState(path, navigation);
@@ -717,7 +853,7 @@ Environment.prototype.register = function register(router) {
     this.start();
   }
 
-  if (!router.getParentRouter()) {
+  if (router.getParentRouter === undefined || !router.getParentRouter()) {
     this.routers.push(router);
   }
 }
@@ -737,7 +873,8 @@ Environment.prototype.unregister = function unregister(router) {
 
 module.exports = Environment;
 
-},{}],12:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],13:[function(__browserify__,module,exports){
 "use strict";
 
 var Environment = __browserify__('./Environment');
@@ -767,11 +904,19 @@ HashEnvironment.prototype.replaceState = function(path, navigation) {
 }
 
 HashEnvironment.prototype.start = function() {
-  window.addEventListener('hashchange', this.onHashChange);
+  if (window.addEventListener) {
+    window.addEventListener('hashchange', this.onHashChange);
+  } else {
+    window.attachEvent('onhashchange', this.onHashChange);
+  }
 };
 
 HashEnvironment.prototype.stop = function() {
-  window.removeEventListener('hashchange', this.onHashChange);
+  if (window.removeEventListener) {
+    window.removeEventListener('hashchange', this.onHashChange);
+  } else {
+    window.detachEvent('onhashchange', this.onHashChange);
+  }
 };
 
 HashEnvironment.prototype.onHashChange = function() {
@@ -784,7 +929,7 @@ HashEnvironment.prototype.onHashChange = function() {
 
 module.exports = HashEnvironment;
 
-},{"./Environment":11}],13:[function(__browserify__,module,exports){
+},{"./Environment":12}],14:[function(__browserify__,module,exports){
 "use strict";
 
 var Environment = __browserify__('./Environment');
@@ -813,11 +958,15 @@ PathnameEnvironment.prototype.replaceState = function(path, navigation) {
 }
 
 PathnameEnvironment.prototype.start = function() {
-  window.addEventListener('popstate', this.onPopState);
+  if (window.addEventListener) {
+    window.addEventListener('popstate', this.onPopState);
+  }
 };
 
 PathnameEnvironment.prototype.stop = function() {
-  window.removeEventListener('popstate', this.onPopState);
+  if (window.removeEventListener) {
+    window.removeEventListener('popstate', this.onPopState);
+  }
 };
 
 PathnameEnvironment.prototype.onPopState = function(e) {
@@ -830,7 +979,8 @@ PathnameEnvironment.prototype.onPopState = function(e) {
 
 module.exports = PathnameEnvironment;
 
-},{"./Environment":11}],14:[function(__browserify__,module,exports){
+},{"./Environment":12}],15:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 /**
  * Routing environment.
@@ -838,7 +988,7 @@ module.exports = PathnameEnvironment;
  * It specifies how routers read its state from DOM and synchronise it back.
  */
 
-var ExecutionEnvironment  = (window.__ReactShim.ExecutionEnvironment);
+var ExecutionEnvironment  = (typeof window !== "undefined" ? window.__ReactShim.ExecutionEnvironment : typeof global !== "undefined" ? global.__ReactShim.ExecutionEnvironment : null);
 var DummyEnvironment      = __browserify__('./DummyEnvironment');
 var Environment           = __browserify__('./Environment');
 
@@ -900,12 +1050,15 @@ module.exports = {
   Mixin: Mixin
 };
 
-},{"./DummyEnvironment":10,"./Environment":11,"./HashEnvironment":12,"./PathnameEnvironment":13}],15:[function(__browserify__,module,exports){
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"./DummyEnvironment":11,"./Environment":12,"./HashEnvironment":13,"./PathnameEnvironment":14}],16:[function(__browserify__,module,exports){
+(function (global){
 "use strict";
 
 var pattern   = __browserify__('url-pattern');
-var mergeInto = (window.__ReactShim.mergeInto);
-var invariant = (window.__ReactShim.invariant);
+var assign    = Object.assign || __browserify__('object.assign');
+var invariant = (typeof window !== "undefined" ? window.__ReactShim.invariant : typeof global !== "undefined" ? global.__ReactShim.invariant : null);
+var React     = (typeof window !== "undefined" ? window.__ReactShim.React : typeof global !== "undefined" ? global.__ReactShim.React : null);
 
 /**
  * Match routes against a path
@@ -922,24 +1075,36 @@ function matchRoutes(routes, path) {
 
   for (var i = 0, len = routes.length; i < len; i++) {
     var current = routes[i];
+    // Simply skip null or undefined to allow ternaries in route definitions
+    if (!current) continue;
+
+    // We expect to be passed an Element. If we weren't, and were just passed props,
+    // mock an Element's structure.
+    if (!React.isValidElement(current)) {
+      current = {props: current, ref: current.ref};
+    }
 
     if ("development" !== "production") {
       invariant(
-        current.handler !== undefined && current.path !== undefined,
+        current.props.handler !== undefined && current.props.path !== undefined,
         "Router should contain either Route or NotFound components " +
         "as routes")
     }
 
-    if (current.path) {
-      current.pattern = current.pattern || pattern(current.path);
+    if (current.props.path) {
+      current.props.pattern = current.props.pattern || pattern.newPattern(current.props.path);
       if (!page) {
-        match = current.pattern.match(path);
+        match = current.props.pattern.match(path);
         if (match) {
           page = current;
         }
+        // Regex matches are not named, so they go in the `_` array, much like splats.
+        if (Array.isArray(match)) {
+          match = {_: match};
+        }
       }
     }
-    if (!notFound && current.path === null) {
+    if (!notFound && current.props.path === null) {
       notFound = current;
     }
   }
@@ -971,32 +1136,212 @@ function Match(path, route, match) {
 }
 
 Match.prototype.getHandler = function() {
-  var props = {};
-  if (this.match) {
-    mergeInto(props, this.match);
-  }
-  if (this.route && this.route.props) {
-    mergeInto(props, this.route.props);
-  }
-  // we will set ref later during a render call
-  delete props.ref;
-  return this.route ? this.route.handler(props) : undefined;
+  if (!this.route) return undefined;
+  var props = assign({}, this.route.props, this.match);
+  delete props.pattern;
+  delete props.path;
+  delete props.handler;
+  return this.route.props.handler(props);
 }
 
 module.exports = matchRoutes;
 
-},{"url-pattern":17}],16:[function(__browserify__,module,exports){
-// Generated by CoffeeScript 1.7.1
-var common,
-  __indexOf = [].indexOf || function(item) { for (var i = 0, l = this.length; i < l; i++) { if (i in this && this[i] === item) return i; } return -1; };
+}).call(this,typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{"object.assign":17,"url-pattern":20}],17:[function(__browserify__,module,exports){
+'use strict';
 
-module.exports = common = {
-  getNames: function(arg) {
-    var name, names, regex, results;
+// modified from https://github.com/es-shims/es6-shim
+var keys = __browserify__('object-keys');
+var isObject = function (obj) {
+	return typeof obj !== 'undefined' && obj !== null;
+};
+
+var assignShim = function assign(target, source1) {
+	var objTarget, s, source, i, props;
+	if (!isObject(target)) { throw new TypeError('target must be an object'); }
+	objTarget = Object(target);
+	for (s = 1; s < arguments.length; ++s) {
+		source = arguments[s];
+		props = keys(Object(source));
+		for (i = 0; i < props.length; ++i) {
+			objTarget[props[i]] = source[props[i]];
+		}
+	}
+	return objTarget;
+};
+
+assignShim.shim = function shimObjectAssign() {
+	if (!Object.assign) {
+		Object.assign = assignShim;
+	}
+	return Object.assign || assignShim;
+};
+
+module.exports = assignShim;
+
+
+},{"object-keys":18}],18:[function(__browserify__,module,exports){
+"use strict";
+
+// modified from https://github.com/es-shims/es5-shim
+var has = Object.prototype.hasOwnProperty;
+var toString = Object.prototype.toString;
+var isArgs = __browserify__('./isArguments');
+var hasDontEnumBug = !({'toString': null}).propertyIsEnumerable('toString');
+var hasProtoEnumBug = (function () {}).propertyIsEnumerable('prototype');
+var dontEnums = [
+	"toString",
+	"toLocaleString",
+	"valueOf",
+	"hasOwnProperty",
+	"isPrototypeOf",
+	"propertyIsEnumerable",
+	"constructor"
+];
+
+var keysShim = function keys(object) {
+	var isObject = object !== null && typeof object === 'object';
+	var isFunction = toString.call(object) === '[object Function]';
+	var isArguments = isArgs(object);
+	var isString = isObject && toString.call(object) === '[object String]';
+	var theKeys = [];
+
+	if (!isObject && !isFunction && !isArguments) {
+		throw new TypeError("Object.keys called on a non-object");
+	}
+
+	var skipProto = hasProtoEnumBug && isFunction;
+	if (isString && object.length > 0 && !has.call(object, 0)) {
+		for (var i = 0; i < object.length; ++i) {
+			theKeys.push(String(i));
+		}
+	}
+
+	if (isArguments && object.length > 0) {
+		for (var j = 0; j < object.length; ++j) {
+			theKeys.push(String(j));
+		}
+	} else {
+		for (var name in object) {
+			if (!(skipProto && name === 'prototype') && has.call(object, name)) {
+				theKeys.push(String(name));
+			}
+		}
+	}
+
+	if (hasDontEnumBug) {
+		var ctor = object.constructor;
+		var skipConstructor = ctor && ctor.prototype === object;
+
+		for (var j = 0; j < dontEnums.length; ++j) {
+			if (!(skipConstructor && dontEnums[j] === 'constructor') && has.call(object, dontEnums[j])) {
+				theKeys.push(dontEnums[j]);
+			}
+		}
+	}
+	return theKeys;
+};
+
+keysShim.shim = function shimObjectKeys() {
+	if (!Object.keys) {
+		Object.keys = keysShim;
+	}
+	return Object.keys || keysShim;
+};
+
+module.exports = keysShim;
+
+
+},{"./isArguments":19}],19:[function(__browserify__,module,exports){
+"use strict";
+
+var toString = Object.prototype.toString;
+
+module.exports = function isArguments(value) {
+	var str = toString.call(value);
+	var isArguments = str === '[object Arguments]';
+	if (!isArguments) {
+		isArguments = str !== '[object Array]'
+			&& value !== null
+			&& typeof value === 'object'
+			&& typeof value.length === 'number'
+			&& value.length >= 0
+			&& toString.call(value.callee) === '[object Function]';
+	}
+	return isArguments;
+};
+
+
+},{}],20:[function(__browserify__,module,exports){
+// Generated by CoffeeScript 1.7.1
+var __indexOf = [].indexOf || function(item) { for (var i = 0, l = this.length; i < l; i++) { if (i in this && this[i] === item) return i; } return -1; };
+
+module.exports = {
+  PatternPrototype: {
+    match: function(url) {
+      var bound, captured, i, match, name, value, _i, _len;
+      match = this.regex.exec(url);
+      if (match == null) {
+        return null;
+      }
+      captured = match.slice(1);
+      if (this.isRegex) {
+        return captured;
+      }
+      bound = {};
+      for (i = _i = 0, _len = captured.length; _i < _len; i = ++_i) {
+        value = captured[i];
+        name = this.names[i];
+        if (value == null) {
+          continue;
+        }
+        if (name === '_') {
+          if (bound._ == null) {
+            bound._ = [];
+          }
+          bound._.push(value);
+        } else {
+          bound[name] = value;
+        }
+      }
+      return bound;
+    }
+  },
+  newPattern: function(arg, separator) {
+    var isRegex, pattern, regexString;
+    if (separator == null) {
+      separator = '/';
+    }
+    isRegex = arg instanceof RegExp;
+    if (!(('string' === typeof arg) || isRegex)) {
+      throw new TypeError('argument must be a regex or a string');
+    }
+    [':', '*'].forEach(function(forbidden) {
+      if (separator === forbidden) {
+        throw new Error("separator can't be " + forbidden);
+      }
+    });
+    pattern = Object.create(module.exports.PatternPrototype);
+    pattern.isRegex = isRegex;
+    pattern.regex = isRegex ? arg : (regexString = module.exports.toRegexString(arg, separator), new RegExp(regexString));
+    if (!isRegex) {
+      pattern.names = module.exports.getNames(arg, separator);
+    }
+    return pattern;
+  },
+  escapeForRegex: function(string) {
+    return string.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  },
+  getNames: function(arg, separator) {
+    var escapedSeparator, name, names, regex, results;
+    if (separator == null) {
+      separator = '/';
+    }
     if (arg instanceof RegExp) {
       return [];
     }
-    regex = /((:?:[^\/]+)|(?:[\*]))/g;
+    escapedSeparator = module.exports.escapeForRegex(separator);
+    regex = new RegExp("((:?:[^" + escapedSeparator + "\(\)]+)|(?:[\*]))", 'g');
     names = [];
     results = regex.exec(arg);
     while (results != null) {
@@ -1012,64 +1357,114 @@ module.exports = common = {
     }
     return names;
   },
-  toRegexString: function(arg) {
-    common.getNames(arg).forEach(function(name) {
-      return arg = arg.replace(':' + name, '([^\/]+)');
+  escapeSeparators: function(string, separator) {
+    var escapedSeparator, regex;
+    if (separator == null) {
+      separator = '/';
+    }
+    escapedSeparator = module.exports.escapeForRegex(separator);
+    regex = new RegExp(escapedSeparator, 'g');
+    return string.replace(regex, escapedSeparator);
+  },
+  toRegexString: function(string, separator) {
+    var escapedSeparator, stringWithEscapedSeparators;
+    if (separator == null) {
+      separator = '/';
+    }
+    stringWithEscapedSeparators = module.exports.escapeSeparators(string, separator);
+    stringWithEscapedSeparators = stringWithEscapedSeparators.replace(/\((.*?)\)/g, '(?:$1)?').replace(/\*/g, '(.*?)');
+    escapedSeparator = module.exports.escapeForRegex(separator);
+    module.exports.getNames(string, separator).forEach(function(name) {
+      return stringWithEscapedSeparators = stringWithEscapedSeparators.replace(':' + name, "([^\\" + separator + "]+)");
     });
-    return '^' + arg.replace(/\*/g, '(.*)') + '$';
+    return "^" + stringWithEscapedSeparators + "$";
   }
 };
 
-},{}],17:[function(__browserify__,module,exports){
-// Generated by CoffeeScript 1.7.1
-var common, patternPrototype;
+},{}],21:[function(__browserify__,module,exports){
+(function() {
+  var URL, URL_PATTERN, defaults, urllite,
+    __hasProp = {}.hasOwnProperty,
+    __slice = [].slice;
 
-common = __browserify__('./common');
+  URL_PATTERN = /^(?:(?:([^:\/?\#]+:)\/+|(\/\/))(?:([a-z0-9-\._~%]+)(?::([a-z0-9-\._~%]+))?@)?(([a-z0-9-\._~%!$&'()*+,;=]+)(?::([0-9]+))?)?)?([^?\#]*?)(\?[^\#]*)?(\#.*)?$/;
 
-patternPrototype = {
-  match: function(url) {
-    var bound, captured, i, match, name, value, _i, _len;
-    match = this.regex.exec(url);
-    if (match == null) {
-      return null;
-    }
-    captured = match.slice(1);
-    if (this.isRegex) {
-      return captured;
-    }
-    bound = {};
-    for (i = _i = 0, _len = captured.length; _i < _len; i = ++_i) {
-      value = captured[i];
-      name = this.names[i];
-      if (name === '_') {
-        if (bound._ == null) {
-          bound._ = [];
-        }
-        bound._.push(value);
-      } else {
-        bound[name] = value;
+  urllite = function(raw, opts) {
+    return urllite.URL.parse(raw, opts);
+  };
+
+  urllite.URL = URL = (function() {
+    function URL(props) {
+      var k, v;
+      for (k in props) {
+        if (!__hasProp.call(props, k)) continue;
+        v = props[k];
+        this[k] = v;
       }
     }
-    return bound;
-  }
-};
 
-module.exports = function(arg) {
-  var isRegex, p;
-  isRegex = arg instanceof RegExp;
-  if (!(('string' === typeof arg) || isRegex)) {
-    throw new TypeError('argument must be a regex or a string');
-  }
-  p = Object.create(patternPrototype);
-  p.isRegex = isRegex;
-  p.regex = isRegex ? arg : new RegExp(common.toRegexString(arg));
-  if (!isRegex) {
-    p.names = common.getNames(arg);
-  }
-  return p;
-};
+    URL.parse = function(raw) {
+      var m, pathname, protocol;
+      m = raw.toString().match(URL_PATTERN);
+      pathname = m[8] || '';
+      protocol = m[1];
+      return urllite._createURL({
+        protocol: protocol,
+        username: m[3],
+        password: m[4],
+        hostname: m[6],
+        port: m[7],
+        pathname: protocol && pathname.charAt(0) !== '/' ? "/" + pathname : pathname,
+        search: m[9],
+        hash: m[10],
+        isSchemeRelative: m[2] != null
+      });
+    };
 
-},{"./common":16}]},{},[])
+    return URL;
+
+  })();
+
+  defaults = {
+    protocol: '',
+    username: '',
+    password: '',
+    host: '',
+    hostname: '',
+    port: '',
+    pathname: '',
+    search: '',
+    hash: '',
+    origin: '',
+    isSchemeRelative: false
+  };
+
+  urllite._createURL = function() {
+    var base, bases, k, props, v, _i, _len, _ref, _ref1;
+    bases = 1 <= arguments.length ? __slice.call(arguments, 0) : [];
+    props = {};
+    for (_i = 0, _len = bases.length; _i < _len; _i++) {
+      base = bases[_i];
+      for (k in defaults) {
+        if (!__hasProp.call(defaults, k)) continue;
+        v = defaults[k];
+        props[k] = (_ref = (_ref1 = base[k]) != null ? _ref1 : props[k]) != null ? _ref : v;
+      }
+    }
+    props.host = props.hostname && props.port ? "" + props.hostname + ":" + props.port : props.hostname ? props.hostname : '';
+    props.origin = props.protocol ? "" + props.protocol + "//" + props.host : '';
+    props.isAbsolutePathRelative = !props.host && props.pathname.charAt(0) === '/';
+    props.isPathRelative = !props.host && props.pathname.charAt(0) !== '/';
+    props.isRelative = props.isSchemeRelative || props.isAbsolutePathRelative || props.isPathRelative;
+    props.isAbsolute = !props.isRelative;
+    return new urllite.URL(props);
+  };
+
+  module.exports = urllite;
+
+}).call(this);
+
+},{}]},{},[])
 
   return require('__main__');
 });
